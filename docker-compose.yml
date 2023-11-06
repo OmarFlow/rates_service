@@ -1,0 +1,134 @@
+version: '3'
+
+services:
+
+  db:
+    networks:
+      - btcrate_net
+    container_name: "pg"
+    build:
+      context: ./for_postgres
+    ports:
+      - '5432:5432'
+    volumes:
+      - ./data/db:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=btcrate_user
+      - POSTGRES_PASSWORD=btcrate_pass
+      - POSTGRES_DB=btcrate_dbase
+      - PGUSER=postgres
+    restart: always
+
+  rabbit:
+    networks:
+      - btcrate_net
+    container_name: "rabbit"
+    image: rabbitmq:3.12.8-management
+    hostname: rabbit
+    environment:
+      - RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS=-rabbit disk_free_limit 2147483648
+    volumes:
+      - ./rabbit:/var/lib/rabbitmq
+    ports:
+      - 5672:5672
+      - 15672:15672
+    depends_on:
+      - db
+    restart: always
+
+  redis:
+    image: redis
+    container_name: "redis"
+    ports:
+      - "6379:6379"
+    networks:
+      - btcrate_net
+    environment:
+      - REDIS_PORT=63796
+      - REDIS_DATABASES=1
+    depends_on:
+      - rabbit
+    restart: always
+
+  models:
+    networks:
+      - btcrate_net
+    build:
+      context: ./models
+    container_name: "models"
+    environment:
+      - PYTHONPATH=/app
+    depends_on:
+      - redis
+
+  currency:
+    networks:
+      - btcrate_net
+    build:
+      context: ./currency_rate
+    ports:
+      - "8477:8477"
+    container_name: "currency"
+    volumes:
+      - ./models/models.py:/currency_rate/currency_rate/models/models.py
+      - ./models/db.py:/currency_rate/currency_rate/models/db.py
+      - ./.env:/currency_rate/currency_rate/.env
+    command: bash -c "python3 init_symbol_handbook.py && python3 main.py"
+    environment:
+      - PYTHONPATH=/currency_rate
+    restart: always
+    depends_on:
+      - redis
+
+  write_currency:
+    networks:
+      - btcrate_net
+    build:
+      context: ./write_currency_rate
+    ports:
+      - "8478:8478"
+    container_name: "write_currency"
+    volumes:
+      - ./models/models.py:/write_currency_rate/write_currency_rate/models/models.py
+      - ./models/db.py:/write_currency_rate/write_currency_rate/models/db.py
+      - ./.env:/write_currency_rate/write_currency_rate/.env
+    command: bash -c "python3 main.py"
+    environment:
+      - PYTHONPATH=/write_currency_rate
+    depends_on:
+      - currency
+    restart: always
+
+  api:
+    networks:
+      - btcrate_net
+    build:
+      context: ./api
+    ports:
+      - "8008:8000"
+    container_name: "api"
+    command: uvicorn main:app --host 0.0.0.0
+    volumes:
+      - ./models/models.py:/app/models/models.py
+      - ./models/db.py:/app/models/db.py
+    environment:
+      - PYTHONPATH=/app
+    depends_on:
+      - write_currency
+    restart: always
+
+#  traefik:
+#    networks:
+#      - btcrate_net
+#    image: traefik
+#    ports:
+#      - "8007:8007"
+#    container_name: "traefik"
+##    depends_on:
+##      - db
+##      - write_currency
+#    restart: always
+
+networks:
+  btcrate_net:
+    driver: bridge
